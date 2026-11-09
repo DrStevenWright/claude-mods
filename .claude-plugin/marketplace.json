@@ -1,0 +1,12 @@
+{
+  "name": "claude-mods",
+  "owner": { "name": "DrStevenWright" },
+  "metadata": { "description": "Claude Code mods (plugins) by DrStevenWright" },
+  "plugins": [
+    {
+      "name": "unreal-mcp-status",
+      "source": "./plugins/unreal-mcp-status",
+      "description": "Status line showing whether the Unreal Editor MCP server is connected"
+    }
+  ]
+}

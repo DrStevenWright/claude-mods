@@ -1,0 +1,21 @@
+{
+  "name": "unreal-mcp-status",
+  "version": "0.2.0",
+  "description": "Status line showing whether the Unreal Editor MCP server is connected",
+  "author": { "name": "DrStevenWright" },
+  "license": "MIT",
+  "userConfig": {
+    "server_name": {
+      "type": "string",
+      "title": "MCP server name",
+      "description": "The key of the Unreal MCP server in the project's .mcp.json.",
+      "default": "unreal-mcp"
+    },
+    "endpoint_url": {
+      "type": "string",
+      "title": "Endpoint URL override",
+      "description": "Leave empty to use the url from the project's .mcp.json (falls back to http://127.0.0.1:8000/mcp).",
+      "default": ""
+    }
+  }
+}
