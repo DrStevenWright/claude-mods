@@ -17,8 +17,29 @@ function readSettings(options: PluginOptions): Settings {
 
 type ProjectEntry =
   | { kind: 'absent' }                              // no .mcp.json, or it doesn't list the server
-  | { kind: 'unreadable' }                          // .mcp.json exists but isn't valid JSON
+  | { kind: 'unreadable'; detail: string }          // .mcp.json exists but isn't valid JSON
   | { kind: 'found'; entry: Record<string, unknown> }
+
+// The parser's error as "line L, column C: message", or the bare message when
+// it gives no position. Handles both V8 forms ("at position N" and "(line L column C)").
+function describeJsonError(text: string, error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error)
+  const lineCol = /\(line (\d+) column (\d+)\)/.exec(raw)
+  const position = /at position (\d+)/.exec(raw)
+  const message = raw
+    .replace(/\s*\(line \d+ column \d+\)/, '')
+    .replace(/\s*in JSON at position \d+/, '')
+    .replace(/\s*at position \d+/, '')
+    .trim()
+  if (lineCol) return `line ${lineCol[1]}, column ${lineCol[2]}: ${message}`
+  if (position) {
+    const before = text.slice(0, Number(position[1]))
+    const line = before.split('\n').length
+    const column = before.length - before.lastIndexOf('\n')
+    return `line ${line}, column ${column}: ${message}`
+  }
+  return message
+}
 
 // The server's entry in the project's .mcp.json. The mod stays silent when the
 // project doesn't configure the server, and says so when the file is broken.
@@ -32,8 +53,8 @@ async function projectServerEntry($: EngineInterface, cwd: string, server: strin
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
-  } catch {
-    return { kind: 'unreadable' }
+  } catch (error) {
+    return { kind: 'unreadable', detail: describeJsonError(text, error) }
   }
   const entry = (parsed as { mcpServers?: Record<string, unknown> } | null)?.mcpServers?.[server]
   return entry && typeof entry === 'object'
@@ -97,13 +118,34 @@ function shadowsPluginServer(projectUrl: string): boolean {
 }
 
 const SHADOW_DETAIL =
-  "The project's .mcp.json lists unreal-mcp at the same URL as this plugin's server, so Claude Code uses the project entry " +
-  "and drops the plugin's copy. A project server can't be reconnected in a running session, so the mod can't connect it. " +
-  'Remove unreal-mcp from .mcp.json; sessions started after that use the plugin server, which reconnects by itself.'
+  `The project's .mcp.json lists unreal-mcp at the same URL as the ${PLUGIN_NAME} plugin's server, which is preventing ` +
+  'reconnection from this session. To allow reconnection, remove unreal-mcp from .mcp.json and then start a new session.'
 
 const TWICE_DETAIL =
-  'This session has Unreal tools from both the project\'s .mcp.json and this plugin, so every editor tool is listed twice. ' +
-  'Remove unreal-mcp from .mcp.json.'
+  'This session is connected twice, meaning that every editor tool is listed twice. To prevent this, remove unreal-mcp ' +
+  `from .mcp.json or else disable the ${PLUGIN_NAME} plugin.`
+
+const GONE_DETAIL = 'The editor stopped answering. Restart editor to reconnect.'
+
+// Ends a sentence taken from elsewhere with exactly one full stop.
+function sentence(text: string): string {
+  const trimmed = text.trim()
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`
+}
+
+const connectFailedToast = (reason: string) =>
+  `Couldn't connect to the editor's MCP server: ${sentence(reason)} The mod retries every 30 seconds. Run /unreal-connect to retry now.`
+
+const connectFailedReply = (reason: string) =>
+  `Couldn't connect to the Unreal Editor MCP server: ${sentence(reason)} Check that the editor is running with its Model Context Protocol plugin enabled.`
+
+// detail is "line L, column C: message" when the parser gave a position, else the bare message.
+function invalidJsonToast(detail: string): string {
+  const what = detail.startsWith('line ')
+    ? `isn't valid JSON (${detail}).`
+    : `isn't valid JSON: ${sentence(detail)}`
+  return `The project's .mcp.json ${what} Fix the file. The status will refresh within 15 seconds.`
+}
 
 // An Unreal project folder: the plugin's own server is used there even when
 // the project's .mcp.json doesn't list one.
@@ -125,11 +167,16 @@ type SessionState = {
   lastConnectAt: number            // clock time of the last automatic connect attempt
   connectError: string | undefined // why the last connect attempt failed, if it did
   shadowed: boolean                // the project's entry hides the plugin's server
-  toasted: Set<string>             // details already shown as a toast this session
+  toasted: Set<string>             // states whose toast has shown since the state was entered
 }
 
-// Shows a detail once per session, as a toast the status line can point at.
-function toastOnce($: EngineInterface, state: SessionState, key: string, text: string): void {
+// Shows a state's detail as a toast once each time the state is entered:
+// `active` false clears it, so the toast shows again if the state returns.
+function toastOnEntry($: EngineInterface, state: SessionState, key: string, active: boolean, text: string): void {
+  if (!active) {
+    state.toasted.delete(key)
+    return
+  }
   if (state.toasted.has(key)) return
   state.toasted.add(key)
   $.ui.toast(`Unreal MCP: ${text}`, { timeoutMs: 12_000 })
@@ -173,20 +220,22 @@ function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined, 
     // listening then stays failed until it is connected again. The mod tries that
     // itself (see refresh); this is what shows while it hasn't worked.
     if (shadowed) return 'Unreal MCP ◐ editor up · not connected ⓘ'
-    if (connectError) return 'Unreal MCP ◐ editor up · connect failed (/unreal-connect)'
+    if (connectError) return 'Unreal MCP ◐ editor up · connect failed ⓘ'
     return upAtStart === false
       ? 'Unreal MCP ◐ editor up · not connected'
       : 'Unreal MCP ◐ editor up · not connected'
   }
-  if (tools) return 'Unreal MCP ○ editor not responding'
+  if (tools) return 'Unreal MCP ○ editor not responding ⓘ'
   return 'Unreal MCP ○ offline'
 }
 
 async function refresh($: EngineInterface, cwd: string, settings: Settings, state: SessionState): Promise<void> {
   const project = await projectServerEntry($, cwd, settings.server)
+  toastOnEntry($, state, 'invalid', project.kind === 'unreadable',
+    project.kind === 'unreadable' ? invalidJsonToast(project.detail) : '')
   if (project.kind === 'unreadable') {
     state.connected = false
-    return show($, state, 'Unreal MCP ○ invalid .mcp.json')
+    return show($, state, 'Unreal MCP ○ invalid .mcp.json ⓘ')
   }
   // Stay silent outside Unreal projects: no project entry and no .uproject.
   if (project.kind === 'absent' && !(await isUnrealProject($, cwd))) {
@@ -203,8 +252,11 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
   // A slow answer says the editor process exists, so it counts as up for the start check.
   if (state.upAtStart === undefined) state.upAtStart = probe !== 'down'
 
-  if (twice) toastOnce($, state, 'twice', TWICE_DETAIL)
-  if (probe === 'up' && !tools && state.shadowed) toastOnce($, state, 'shadowed', SHADOW_DETAIL)
+  toastOnEntry($, state, 'twice', twice, TWICE_DETAIL)
+  toastOnEntry($, state, 'shadowed', probe === 'up' && !tools && state.shadowed, SHADOW_DETAIL)
+  // Editor not responding: toast only when it follows a working connection.
+  const gone = probe === 'down' && tools && (state.connected || state.toasted.has('gone'))
+  toastOnEntry($, state, 'gone', gone, GONE_DETAIL)
 
   // Editor up but no tools: connect the plugin's own server, at most every 30 s.
   // Not while the project entry hides it: there is nothing to connect.
@@ -216,6 +268,8 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
     }
   }
   if (tools) state.connectError = undefined
+  const failed = probe === 'up' && !tools && !state.shadowed && state.connectError !== undefined
+  toastOnEntry($, state, 'connect', failed, connectFailedToast(state.connectError ?? ''))
 
   state.connected = probe === 'up' && tools
   show($, state, describe(probe, tools, state.upAtStart, state.connectError, state.shadowed, twice))
@@ -276,7 +330,7 @@ export const register: Register = (on, options) => {
     void guardedRefresh($, cwd, settings, state)
     return {
       text: error
-        ? `Couldn't connect to the Unreal Editor MCP server: ${error} Is the editor running with its MCP plugin enabled?`
+        ? connectFailedReply(error)
         : 'Connected to the Unreal Editor MCP server.',
     }
   })

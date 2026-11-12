@@ -5,15 +5,17 @@ A Claude Code status line that shows whether the Unreal Editor's MCP server is r
 | Status line | Meaning |
 | --- | --- |
 | `Unreal MCP ● connected` | The editor answers and this session has the server's tools. |
-| `Unreal MCP ◐ editor up · not connected` | The editor answers, but this session has no connection: usually the editor started after the session, whose one connection attempt failed. Reconnect the server, fork the session or start a new one. |
-| `Unreal MCP ◐ editor up · not connected ⓘ` | Not connected, and the project's `.mcp.json` lists `unreal-mcp` at the plugin's URL, which hides the plugin's server so the mod can't connect it. A toast explains once per session; `/unreal-connect` shows the same. Remove the project entry. |
-| `Unreal MCP ⚠ connected twice ⓘ` | The session has tools from both the project's and the plugin's server, so every tool is listed twice. Remove the project entry. |
-| `Unreal MCP ◐ editor up · connect failed (/unreal-connect)` | The mod tried to connect the plugin's server and was refused. Run `/unreal-connect` to retry and see the reason. |
+| `Unreal MCP ◐ editor up · not connected` | The editor answers, but this session has no connection yet. The mod connects the plugin's server by itself within about 30 seconds. |
+| `Unreal MCP ◐ editor up · not connected ⓘ` | Not connected, and the project's `.mcp.json` lists `unreal-mcp` at the plugin's URL, which hides the plugin's server so the mod can't connect it. Remove the project entry, then start a new session. |
+| `Unreal MCP ⚠ connected twice ⓘ` | The session has tools from both the project's and the plugin's server, so every tool is listed twice. Remove the project entry or disable this plugin. |
+| `Unreal MCP ◐ editor up · connect failed ⓘ` | The mod tried to connect the plugin's server and was refused. It retries every 30 seconds; `/unreal-connect` retries now. |
 | `Unreal MCP ◐ connected · editor busy` | The session is connected, but the editor didn't answer within 3 seconds, usually because it is cooking, compiling shaders or blocked on a dialog. |
 | `Unreal MCP ○ editor busy` | The same, in a session that isn't connected. |
-| `Unreal MCP ○ editor not responding` | The session has the tools, but nothing answers at the endpoint any more. |
+| `Unreal MCP ○ editor not responding ⓘ` | The session was connected, but nothing answers at the endpoint any more, usually because the editor closed or crashed. Restart it to reconnect. |
 | `Unreal MCP ○ offline` | Nothing answers at the endpoint, and the session isn't connected. |
-| `Unreal MCP ○ invalid .mcp.json` | The project's `.mcp.json` exists but can't be parsed. |
+| `Unreal MCP ○ invalid .mcp.json ⓘ` | The project's `.mcp.json` exists but can't be parsed. The toast gives the line and column. |
+
+`ⓘ` means a toast explains the state, once each time the state is entered. `/unreal-connect` gives the same detail on demand.
 
 It checks every 15 seconds, and every 30 seconds once connected. The status updates on its own after a reconnect. It stays silent in any project whose `.mcp.json` does not configure the server, so it is safe to install at user scope.
 
