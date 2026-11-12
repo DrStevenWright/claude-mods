@@ -16,9 +16,11 @@ function readSettings(options: PluginOptions): Settings {
 }
 
 type ProjectEntry =
-  | { kind: 'absent' }                              // no .mcp.json, or it doesn't list the server
+  | { kind: 'absent' }                              // no .mcp.json, or it lists no Unreal server
   | { kind: 'unreadable'; detail: string }          // .mcp.json exists but isn't valid JSON
-  | { kind: 'found'; entry: Record<string, unknown> }
+  // entry: the server under its configured name, if listed. aliases: other names
+  // in .mcp.json at the plugin server's URL (a renamed or duplicated entry).
+  | { kind: 'found'; entry: Record<string, unknown> | undefined; aliases: string[] }
 
 // The parser's error as "line L, column C: message", or the bare message when
 // it gives no position. Handles both V8 forms ("at position N" and "(line L column C)").
@@ -56,10 +58,15 @@ async function projectServerEntry($: EngineInterface, cwd: string, server: strin
   } catch (error) {
     return { kind: 'unreadable', detail: describeJsonError(text, error) }
   }
-  const entry = (parsed as { mcpServers?: Record<string, unknown> } | null)?.mcpServers?.[server]
-  return entry && typeof entry === 'object'
-    ? { kind: 'found', entry: entry as Record<string, unknown> }
-    : { kind: 'absent' }
+  const servers = (parsed as { mcpServers?: Record<string, unknown> } | null)?.mcpServers ?? {}
+  const raw = servers[server]
+  const entry = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : undefined
+  const aliases = Object.entries(servers)
+    .filter(([name, value]) => name !== server && value && typeof value === 'object'
+      && typeof (value as { url?: unknown }).url === 'string'
+      && normaliseUrl((value as { url: string }).url) === normaliseUrl(PLUGIN_SERVER_URL))
+    .map(([name]) => name)
+  return entry || aliases.length > 0 ? { kind: 'found', entry, aliases } : { kind: 'absent' }
 }
 
 const PROBE_TIMEOUT_MS = 3_000
@@ -86,12 +93,33 @@ const PLUGIN_NAME = 'unreal-mcp-status'
 // (.mcp.json) and/or the plugin's own.
 type ToolSources = { project: boolean; plugin: boolean }
 
-async function sessionToolSources($: EngineInterface, server: string): Promise<ToolSources> {
+// The .mcp.json servers the user has turned off (merged settings), which
+// Claude Code doesn't load, so they neither hide the plugin's server nor
+// connect alongside it.
+async function disabledProjectServers($: EngineInterface): Promise<Set<string>> {
+  try {
+    const value = await $.settings.read({ key: 'disabledMcpjsonServers' })
+    return new Set(Array.isArray(value) ? value.filter((n): n is string => typeof n === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+// A server name as it appears in tool names: characters other than letters,
+// digits, '_' and '-' become '_'.
+function toolSegment(name: string): string {
+  return name.replace(/[^A-Za-z0-9_-]/g, '_')
+}
+
+// projectNames: the configured name plus any other .mcp.json names at the
+// plugin server's URL, so a renamed entry still counts as the project's copy.
+async function sessionToolSources($: EngineInterface, server: string, projectNames: string[] = [server]): Promise<ToolSources> {
   try {
     const names = (await $.tool.list()).map(t => t.name)
+    const projectPrefixes = projectNames.map(n => `mcp__${toolSegment(n)}__`)
     return {
-      project: names.some(n => n.startsWith(`mcp__${server}__`)),
-      plugin: names.some(n => n.startsWith(`mcp__plugin_${PLUGIN_NAME}_${server}__`)),
+      project: names.some(n => projectPrefixes.some(p => n.startsWith(p))),
+      plugin: names.some(n => n.startsWith(`mcp__plugin_${PLUGIN_NAME}_${toolSegment(server)}__`)),
     }
   } catch {
     return { project: false, plugin: false }
@@ -110,22 +138,22 @@ function normaliseUrl(url: string): string {
   return url.trim().toLowerCase().replace('://localhost', '://127.0.0.1').replace(/\/+$/, '')
 }
 
-// Claude Code drops a plugin server whose URL a project server already uses,
-// so a project entry at the plugin's URL hides the plugin's copy, and the mod
-// can't connect it.
-function shadowsPluginServer(projectUrl: string): boolean {
-  return projectUrl !== '' && normaliseUrl(projectUrl) === normaliseUrl(PLUGIN_SERVER_URL)
-}
+const shadowDetail = (name: string) =>
+  `The project's .mcp.json lists ${name} at the same URL as the ${PLUGIN_NAME} plugin's server, which is preventing ` +
+  `reconnection from this session. To allow reconnection, remove ${name} from .mcp.json and then start a new session.`
 
-const SHADOW_DETAIL =
-  `The project's .mcp.json lists unreal-mcp at the same URL as the ${PLUGIN_NAME} plugin's server, which is preventing ` +
-  'reconnection from this session. To allow reconnection, remove unreal-mcp from .mcp.json and then start a new session.'
+const twiceDetail = (names: string[]) =>
+  'This session is connected twice, meaning that every editor tool is listed twice. To prevent this, remove ' +
+  `${names.join(' and ')} from .mcp.json or else disable the ${PLUGIN_NAME} plugin.`
 
-const TWICE_DETAIL =
-  'This session is connected twice, meaning that every editor tool is listed twice. To prevent this, remove unreal-mcp ' +
-  `from .mcp.json or else disable the ${PLUGIN_NAME} plugin.`
+// Toasts are kept short: the cause and the fix. /unreal-connect gives the longer detail.
+const shadowToast = (name: string) =>
+  `.mcp.json lists ${name}, which blocks reconnection. Remove it and start a new session.`
 
-const GONE_DETAIL = 'The editor stopped answering. Restart editor to reconnect.'
+const twiceToast = (names: string[]) =>
+  `connected twice, so every tool is listed twice. Remove ${names.join(' and ')} from .mcp.json or disable this plugin.`
+
+const GONE_TOAST = 'the editor stopped answering. Restart it to reconnect.'
 
 // Ends a sentence taken from elsewhere with exactly one full stop.
 function sentence(text: string): string {
@@ -134,17 +162,18 @@ function sentence(text: string): string {
 }
 
 const connectFailedToast = (reason: string) =>
-  `Couldn't connect to the editor's MCP server: ${sentence(reason)} The mod retries every 30 seconds. Run /unreal-connect to retry now.`
+  `couldn't connect: ${sentence(reason)} Retrying every 30 s, or run /unreal-connect.`
 
 const connectFailedReply = (reason: string) =>
   `Couldn't connect to the Unreal Editor MCP server: ${sentence(reason)} Check that the editor is running with its Model Context Protocol plugin enabled.`
 
-// detail is "line L, column C: message" when the parser gave a position, else the bare message.
+// detail is "line L, column C: message" when the parser gave a position, else
+// the bare message; the toast keeps only the position.
 function invalidJsonToast(detail: string): string {
-  const what = detail.startsWith('line ')
-    ? `isn't valid JSON (${detail}).`
-    : `isn't valid JSON: ${sentence(detail)}`
-  return `The project's .mcp.json ${what} Fix the file. The status will refresh within 15 seconds.`
+  const position = /^line \d+, column \d+/.exec(detail)
+  return position
+    ? `.mcp.json isn't valid JSON (${position[0]}). Fix the file.`
+    : ".mcp.json isn't valid JSON. Fix the file."
 }
 
 // An Unreal project folder: the plugin's own server is used there even when
@@ -167,6 +196,7 @@ type SessionState = {
   lastConnectAt: number            // clock time of the last automatic connect attempt
   connectError: string | undefined // why the last connect attempt failed, if it did
   shadowed: boolean                // the project's entry hides the plugin's server
+  projectNames: string[]           // .mcp.json names of the project's copies of the server
   toasted: Set<string>             // states whose toast has shown since the state was entered
 }
 
@@ -243,20 +273,35 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
     return show($, state, undefined)
   }
 
-  const projectUrl = project.kind === 'found' && typeof project.entry.url === 'string' ? project.entry.url : ''
+  // Entries the user turned off with disabledMcpjsonServers aren't loaded, so they don't count.
+  const disabled = await disabledProjectServers($)
+  const listed = project.kind === 'found' ? project.entry : undefined
+  const entry = listed && !disabled.has(settings.server) ? listed : undefined
+  const projectUrl = listed && typeof listed.url === 'string' ? listed.url : ''
   const url = settings.endpointOverride || projectUrl || FALLBACK_ENDPOINT
-  const [probe, sources] = await Promise.all([probeEndpoint($, url), sessionToolSources($, settings.server)])
+  // Project copies of the server: its configured name (if listed and enabled)
+  // and any other enabled name at the plugin server's URL.
+  const aliases = project.kind === 'found' ? project.aliases.filter(n => !disabled.has(n)) : []
+  state.projectNames = [...(entry ? [settings.server] : []), ...aliases]
+  const [probe, sources] = await Promise.all([
+    probeEndpoint($, url),
+    sessionToolSources($, settings.server, state.projectNames),
+  ])
   let tools = sources.project || sources.plugin
   const twice = sources.project && sources.plugin
-  state.shadowed = shadowsPluginServer(projectUrl)
+  // Claude Code drops a plugin server when the project lists one of the same
+  // name (checked with `claude mcp list`), so a project entry under the plugin
+  // server's name hides it. A renamed entry doesn't hide it; both connect, and
+  // that shows as connected twice.
+  state.shadowed = entry !== undefined
   // A slow answer says the editor process exists, so it counts as up for the start check.
   if (state.upAtStart === undefined) state.upAtStart = probe !== 'down'
 
-  toastOnEntry($, state, 'twice', twice, TWICE_DETAIL)
-  toastOnEntry($, state, 'shadowed', probe === 'up' && !tools && state.shadowed, SHADOW_DETAIL)
+  toastOnEntry($, state, 'twice', twice, twiceToast(state.projectNames))
+  toastOnEntry($, state, 'shadowed', probe === 'up' && !tools && state.shadowed, shadowToast(settings.server))
   // Editor not responding: toast only when it follows a working connection.
   const gone = probe === 'down' && tools && (state.connected || state.toasted.has('gone'))
-  toastOnEntry($, state, 'gone', gone, GONE_DETAIL)
+  toastOnEntry($, state, 'gone', gone, GONE_TOAST)
 
   // Editor up but no tools: connect the plugin's own server, at most every 30 s.
   // Not while the project entry hides it: there is nothing to connect.
@@ -298,7 +343,7 @@ export const register: Register = (on, options) => {
     const state: SessionState = {
       last: undefined, upAtStart: undefined, connected: false, tick: 0, inFlight: false,
       lastConnectAt: Number.NEGATIVE_INFINITY, connectError: undefined,
-      shadowed: false, toasted: new Set<string>(),
+      shadowed: false, projectNames: [], toasted: new Set<string>(),
     }
     active = { state, cwd: e.cwd }
     await $.command.register({
@@ -318,13 +363,13 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'unreal-connect' }, async $ => {
     if (!active) return { text: 'Unreal MCP status has not started in this session yet.' }
     const { state, cwd } = active
-    const sources = await sessionToolSources($, settings.server)
-    if (sources.project && sources.plugin) return { text: TWICE_DETAIL }
+    const sources = await sessionToolSources($, settings.server, state.projectNames)
+    if (sources.project && sources.plugin) return { text: twiceDetail(state.projectNames) }
     if (sources.project || sources.plugin) {
       void guardedRefresh($, cwd, settings, state)
       return { text: 'Already connected to the Unreal Editor MCP server.' }
     }
-    if (state.shadowed) return { text: `Not connected. ${SHADOW_DETAIL}` }
+    if (state.shadowed) return { text: `Not connected. ${shadowDetail(settings.server)}` }
     const error = await connectServer($, state)
     state.lastConnectAt = await $.clock.now()
     void guardedRefresh($, cwd, settings, state)
