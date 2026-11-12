@@ -126,11 +126,6 @@ async function sessionToolSources($: EngineInterface, server: string, projectNam
   }
 }
 
-async function hasSessionTools($: EngineInterface, server: string): Promise<boolean> {
-  const sources = await sessionToolSources($, server)
-  return sources.project || sources.plugin
-}
-
 // The URL in this plugin's own .mcp.json.
 const PLUGIN_SERVER_URL = 'http://127.0.0.1:8000/mcp'
 
@@ -138,34 +133,21 @@ function normaliseUrl(url: string): string {
   return url.trim().toLowerCase().replace('://localhost', '://127.0.0.1').replace(/\/+$/, '')
 }
 
-const shadowDetail = (name: string) =>
-  `The project's .mcp.json lists ${name} at the same URL as the ${PLUGIN_NAME} plugin's server, which is preventing ` +
-  `reconnection from this session. To allow reconnection, remove ${name} from .mcp.json and then start a new session.`
-
-const twiceDetail = (names: string[]) =>
-  'This session is connected twice, meaning that every editor tool is listed twice. To prevent this, remove ' +
-  `${names.join(' and ')} from .mcp.json or else disable the ${PLUGIN_NAME} plugin.`
-
-// Toasts are kept short: the cause and the fix. /unreal-connect gives the longer detail.
+// Toasts are kept short: the cause and the fix.
 const shadowToast = (name: string) =>
   `.mcp.json lists ${name}, which blocks reconnection. Remove it and start a new session.`
 
 const twiceToast = (names: string[]) =>
   `connected twice, so every tool is listed twice. Remove ${names.join(' and ')} from .mcp.json or disable this plugin.`
 
+// A session reconnects by itself when an editor it was connected to comes back.
 const GONE_TOAST = 'the editor stopped answering. Restart it to reconnect.'
 
-// Ends a sentence taken from elsewhere with exactly one full stop.
-function sentence(text: string): string {
-  const trimmed = text.trim()
-  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`
-}
-
-const connectFailedToast = (reason: string) =>
-  `couldn't connect: ${sentence(reason)} Retrying every 30 s, or run /unreal-connect.`
-
-const connectFailedReply = (reason: string) =>
-  `Couldn't connect to the Unreal Editor MCP server: ${sentence(reason)} Check that the editor is running with its Model Context Protocol plugin enabled.`
+// A session dials its MCP servers once, at start. A plugin server that failed
+// then stays failed: $.mcp.connect returns the startup failure without
+// re-dialling (tested). The desktop app's Reconnect button does re-dial it, and
+// the server is listed there as "Unreal MCP".
+const RECONNECT_TOAST = 'the editor is up. To connect, press Reconnect on Unreal MCP under Connectors.'
 
 // detail is "line L, column C: message" when the parser gave a position, else
 // the bare message; the toast keeps only the position.
@@ -193,8 +175,6 @@ type SessionState = {
   connected: boolean
   tick: number
   inFlight: boolean
-  lastConnectAt: number            // clock time of the last automatic connect attempt
-  connectError: string | undefined // why the last connect attempt failed, if it did
   shadowed: boolean                // the project's entry hides the plugin's server
   projectNames: string[]           // .mcp.json names of the project's copies of the server
   toasted: Set<string>             // states whose toast has shown since the state was entered
@@ -212,22 +192,6 @@ function toastOnEntry($: EngineInterface, state: SessionState, key: string, acti
   $.ui.toast(`Unreal MCP: ${text}`, { timeoutMs: 12_000 })
 }
 
-// The server's key in this plugin's own .mcp.json, which $.mcp.connect takes.
-const PLUGIN_SERVER_KEY = 'unreal-mcp'
-const AUTO_CONNECT_EVERY_MS = 30_000
-
-// Connects the plugin's own Unreal server. Returns undefined on success, or
-// the refusal as one short sentence.
-async function connectServer($: EngineInterface, state: SessionState): Promise<string | undefined> {
-  try {
-    const result = await $.mcp.connect(PLUGIN_SERVER_KEY)
-    state.connectError = result.isConnected ? undefined : result.message
-  } catch (error) {
-    state.connectError = error instanceof Error ? error.message : String(error)
-  }
-  return state.connectError
-}
-
 function show($: EngineInterface, state: SessionState, text: string | undefined): void {
   if (text !== state.last) {
     state.last = text
@@ -235,8 +199,7 @@ function show($: EngineInterface, state: SessionState, text: string | undefined)
   }
 }
 
-function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined, connectError: string | undefined,
-  shadowed: boolean, twice: boolean): string {
+function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined, shadowed: boolean, twice: boolean): string {
   if (twice) return 'Unreal MCP ⚠ connected twice ⓘ'
   if (probe === 'slow') {
     return tools
@@ -246,14 +209,12 @@ function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined, 
   const up = probe === 'up'
   if (up && tools) return 'Unreal MCP ● connected'
   if (up) {
-    // The session's MCP client dials servers once at start; a server that wasn't
-    // listening then stays failed until it is connected again. The mod tries that
-    // itself (see refresh); this is what shows while it hasn't worked.
-    if (shadowed) return 'Unreal MCP ◐ editor up · not connected ⓘ'
-    if (connectError) return 'Unreal MCP ◐ editor up · connect failed ⓘ'
-    return upAtStart === false
-      ? 'Unreal MCP ◐ editor up · not connected'
-      : 'Unreal MCP ◐ editor up · not connected'
+    // Shadowed by a project entry or just not connected yet: either way the
+    // toast says what to do. upAtStart is kept in case "started after the
+    // session" needs telling apart again.
+    void upAtStart
+    void shadowed
+    return 'Unreal MCP ◐ editor up · not connected ⓘ'
   }
   if (tools) return 'Unreal MCP ○ editor not responding ⓘ'
   return 'Unreal MCP ○ offline'
@@ -287,7 +248,7 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
     probeEndpoint($, url),
     sessionToolSources($, settings.server, state.projectNames),
   ])
-  let tools = sources.project || sources.plugin
+  const tools = sources.project || sources.plugin
   const twice = sources.project && sources.plugin
   // Claude Code drops a plugin server when the project lists one of the same
   // name (checked with `claude mcp list`), so a project entry under the plugin
@@ -303,25 +264,12 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
   const gone = probe === 'down' && tools && (state.connected || state.toasted.has('gone'))
   toastOnEntry($, state, 'gone', gone, GONE_TOAST)
 
-  // Editor up but no tools: connect the plugin's own server, at most every 30 s.
-  // Not while the project entry hides it: there is nothing to connect.
-  if (probe === 'up' && !tools && !state.shadowed) {
-    const now = await $.clock.now()
-    if (now - state.lastConnectAt >= AUTO_CONNECT_EVERY_MS) {
-      state.lastConnectAt = now
-      if (!(await connectServer($, state))) tools = await hasSessionTools($, settings.server)
-    }
-  }
-  if (tools) state.connectError = undefined
-  const failed = probe === 'up' && !tools && !state.shadowed && state.connectError !== undefined
-  toastOnEntry($, state, 'connect', failed, connectFailedToast(state.connectError ?? ''))
+  // Editor up but this session has no tools: only the Reconnect button can re-dial.
+  toastOnEntry($, state, 'reconnect', probe === 'up' && !tools && !state.shadowed, RECONNECT_TOAST)
 
   state.connected = probe === 'up' && tools
-  show($, state, describe(probe, tools, state.upAtStart, state.connectError, state.shadowed, twice))
+  show($, state, describe(probe, tools, state.upAtStart, state.shadowed, twice))
 }
-
-// The latest session's state and cwd, for /unreal-connect (registered once per module).
-let active: { state: SessionState; cwd: string } | undefined
 
 // Skip a tick while the previous check is still pending, so a hung editor
 // doesn't pile up requests that can't be cancelled.
@@ -342,14 +290,8 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     const state: SessionState = {
       last: undefined, upAtStart: undefined, connected: false, tick: 0, inFlight: false,
-      lastConnectAt: Number.NEGATIVE_INFINITY, connectError: undefined,
       shadowed: false, projectNames: [], toasted: new Set<string>(),
     }
-    active = { state, cwd: e.cwd }
-    await $.command.register({
-      name: 'unreal-connect',
-      description: 'Connect this session to the Unreal Editor MCP server',
-    })
     void guardedRefresh($, e.cwd, settings, state)
     $.clock.every(POLL_MS, () => {
       state.tick++
@@ -358,25 +300,5 @@ export const register: Register = (on, options) => {
       void guardedRefresh($, e.cwd, settings, state)
     })
     return result
-  })
-
-  on('command.run', { command: 'unreal-connect' }, async $ => {
-    if (!active) return { text: 'Unreal MCP status has not started in this session yet.' }
-    const { state, cwd } = active
-    const sources = await sessionToolSources($, settings.server, state.projectNames)
-    if (sources.project && sources.plugin) return { text: twiceDetail(state.projectNames) }
-    if (sources.project || sources.plugin) {
-      void guardedRefresh($, cwd, settings, state)
-      return { text: 'Already connected to the Unreal Editor MCP server.' }
-    }
-    if (state.shadowed) return { text: `Not connected. ${shadowDetail(settings.server)}` }
-    const error = await connectServer($, state)
-    state.lastConnectAt = await $.clock.now()
-    void guardedRefresh($, cwd, settings, state)
-    return {
-      text: error
-        ? connectFailedReply(error)
-        : 'Connected to the Unreal Editor MCP server.',
-    }
   })
 }
