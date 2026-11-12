@@ -93,6 +93,18 @@ const PLUGIN_NAME = 'unreal-mcp-status'
 // (.mcp.json) and/or the plugin's own.
 type ToolSources = { project: boolean; plugin: boolean }
 
+// The .mcp.json servers the user has turned off (merged settings), which
+// Claude Code doesn't load, so they neither hide the plugin's server nor
+// connect alongside it.
+async function disabledProjectServers($: EngineInterface): Promise<Set<string>> {
+  try {
+    const value = await $.settings.read({ key: 'disabledMcpjsonServers' })
+    return new Set(Array.isArray(value) ? value.filter((n): n is string => typeof n === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
 // A server name as it appears in tool names: characters other than letters,
 // digits, '_' and '-' become '_'.
 function toolSegment(name: string): string {
@@ -253,12 +265,16 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
     return show($, state, undefined)
   }
 
-  const entry = project.kind === 'found' ? project.entry : undefined
-  const projectUrl = entry && typeof entry.url === 'string' ? entry.url : ''
+  // Entries the user turned off with disabledMcpjsonServers aren't loaded, so they don't count.
+  const disabled = await disabledProjectServers($)
+  const listed = project.kind === 'found' ? project.entry : undefined
+  const entry = listed && !disabled.has(settings.server) ? listed : undefined
+  const projectUrl = listed && typeof listed.url === 'string' ? listed.url : ''
   const url = settings.endpointOverride || projectUrl || FALLBACK_ENDPOINT
-  // Project copies of the server: its configured name (if listed) and any other
-  // name at the plugin server's URL.
-  state.projectNames = [...(entry ? [settings.server] : []), ...(project.kind === 'found' ? project.aliases : [])]
+  // Project copies of the server: its configured name (if listed and enabled)
+  // and any other enabled name at the plugin server's URL.
+  const aliases = project.kind === 'found' ? project.aliases.filter(n => !disabled.has(n)) : []
+  state.projectNames = [...(entry ? [settings.server] : []), ...aliases]
   const [probe, sources] = await Promise.all([
     probeEndpoint($, url),
     sessionToolSources($, settings.server, state.projectNames),
