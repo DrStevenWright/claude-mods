@@ -5,12 +5,12 @@ A Claude Code status line that shows whether the Unreal Editor's MCP server is r
 | Status line | Meaning |
 | --- | --- |
 | `Unreal MCP ● connected` | The editor answers and this session has the server's tools. |
-| `Unreal MCP ◐ editor started after this session · …` | The editor wasn't running when the session started, so the session's one connection attempt failed. Reconnect the server, fork the session or start a new one. |
-| `Unreal MCP ◐ editor up · this session not connected · …` | The editor answers, but the session has no connection (it dropped, or failed for another reason). Same fixes. |
-| `Unreal MCP ◐ connected · editor busy (no answer in 3 s)` / `○ editor busy or hung` | The editor didn't answer within 3 seconds, usually because it is cooking, compiling shaders or blocked on a dialog. |
-| `Unreal MCP ○ editor not responding` | The session has the tools, but the editor stopped answering. |
-| `Unreal MCP ○ offline (editor not running)` | Nothing answers at the endpoint. |
-| `Unreal MCP ○ .mcp.json is not valid JSON` | The project's `.mcp.json` exists but can't be parsed. |
+| `Unreal MCP ◐ editor up · not connected` | The editor answers, but this session has no connection: usually the editor started after the session, whose one connection attempt failed. Reconnect the server, fork the session or start a new one. |
+| `Unreal MCP ◐ connected · editor busy` | The session is connected, but the editor didn't answer within 3 seconds, usually because it is cooking, compiling shaders or blocked on a dialog. |
+| `Unreal MCP ○ editor busy` | The same, in a session that isn't connected. |
+| `Unreal MCP ○ editor not responding` | The session has the tools, but nothing answers at the endpoint any more. |
+| `Unreal MCP ○ offline` | Nothing answers at the endpoint, and the session isn't connected. |
+| `Unreal MCP ○ invalid mcp.json` | The project's `.mcp.json` exists but can't be parsed. |
 
 It checks every 15 seconds, and every 30 seconds once connected. The status updates on its own after a reconnect. It stays silent in any project whose `.mcp.json` does not configure the server, so it is safe to install at user scope.
 

@@ -85,20 +85,21 @@ function show($: EngineInterface, state: SessionState, text: string | undefined)
 function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined): string {
   if (probe === 'slow') {
     return tools
-      ? 'Unreal MCP ◐ connected · editor busy (no answer in 3 s)'
-      : 'Unreal MCP ○ editor busy or hung (no answer in 3 s)'
+      ? 'Unreal MCP ◐ connected · editor busy'
+      : 'Unreal MCP ○ editor busy'
   }
   const up = probe === 'up'
   if (up && tools) return 'Unreal MCP ● connected'
   if (up) {
     // The session's MCP client dials servers once at start; a server that wasn't
-    // listening then stays failed until the session reconnects it.
+    // listening then stays failed until the session reconnects it. upAtStart tells
+    // the two cases apart; both read the same until reconnect options exist.
     return upAtStart === false
-      ? 'Unreal MCP ◐ editor started after this session · reconnect, fork or start a new session'
-      : 'Unreal MCP ◐ editor up · this session not connected · reconnect, fork or start a new session'
+      ? 'Unreal MCP ◐ editor up · not connected'
+      : 'Unreal MCP ◐ editor up · not connected'
   }
   if (tools) return 'Unreal MCP ○ editor not responding'
-  return 'Unreal MCP ○ offline (editor not running)'
+  return 'Unreal MCP ○ offline'
 }
 
 async function refresh($: EngineInterface, cwd: string, settings: Settings, state: SessionState): Promise<void> {
@@ -109,7 +110,7 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
   }
   if (project.kind === 'unreadable') {
     state.connected = false
-    return show($, state, 'Unreal MCP ○ .mcp.json is not valid JSON')
+    return show($, state, 'Unreal MCP ○ invalid mcp.json')
   }
 
   const entry = project.entry
