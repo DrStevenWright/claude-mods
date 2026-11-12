@@ -1,6 +1,6 @@
 {
   "name": "unreal-mcp-status",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Status line showing whether the Unreal Editor MCP server is connected",
   "author": { "name": "DrStevenWright" },
   "license": "MIT",

@@ -5,11 +5,16 @@ A Claude Code status line that shows whether the Unreal Editor's MCP server is r
 | Status line | Meaning |
 | --- | --- |
 | `Unreal MCP ● connected` | The editor answers and this session has the server's tools. |
-| `Unreal MCP ◐ editor up, session not connected` | The editor answers, but the session dropped the connection: press Reconnect in `/mcp`. |
-| `Unreal MCP ○ editor not responding` | The session has the tools, but the editor stopped answering. |
-| `Unreal MCP ○ offline (editor not running)` | Nothing answers at the endpoint. |
+| `Unreal MCP ◐ editor up · not connected` | The editor answers, but this session has no connection: usually the editor started after the session, whose one connection attempt failed. Reconnect the server, fork the session or start a new one. |
+| `Unreal MCP ◐ connected · editor busy` | The session is connected, but the editor didn't answer within 3 seconds, usually because it is cooking, compiling shaders or blocked on a dialog. |
+| `Unreal MCP ○ editor busy` | The same, in a session that isn't connected. |
+| `Unreal MCP ○ editor not responding` | The session has the tools, but nothing answers at the endpoint any more. |
+| `Unreal MCP ○ offline` | Nothing answers at the endpoint, and the session isn't connected. |
+| `Unreal MCP ○ invalid .mcp.json` | The project's `.mcp.json` exists but can't be parsed. |
 
-It checks every 15 seconds. It stays silent in any project whose `.mcp.json` does not configure the server, so it is safe to install at user scope.
+It checks every 15 seconds, and every 30 seconds once connected. The status updates on its own after a reconnect. It stays silent in any project whose `.mcp.json` does not configure the server, so it is safe to install at user scope.
+
+**Reconnecting:** Claude Code connects to MCP servers once, when the session starts. Where Reconnect is available for the server (`/mcp` in the terminal CLI), use it. In the desktop app a project `.mcp.json` server may not be listed with a Reconnect button; forking or starting a new session connects it.
 
 ## Install
 
