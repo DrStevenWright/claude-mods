@@ -87,6 +87,24 @@ type SessionState = {
   connected: boolean
   tick: number
   inFlight: boolean
+  lastConnectAt: number            // clock time of the last automatic connect attempt
+  connectError: string | undefined // why the last connect attempt failed, if it did
+}
+
+// The server's key in this plugin's own .mcp.json, which $.mcp.connect takes.
+const PLUGIN_SERVER_KEY = 'unreal-mcp'
+const AUTO_CONNECT_EVERY_MS = 30_000
+
+// Connects the plugin's own Unreal server. Returns undefined on success, or
+// the refusal as one short sentence.
+async function connectServer($: EngineInterface, state: SessionState): Promise<string | undefined> {
+  try {
+    const result = await $.mcp.connect(PLUGIN_SERVER_KEY)
+    state.connectError = result.isConnected ? undefined : result.message
+  } catch (error) {
+    state.connectError = error instanceof Error ? error.message : String(error)
+  }
+  return state.connectError
 }
 
 function show($: EngineInterface, state: SessionState, text: string | undefined): void {
@@ -96,7 +114,7 @@ function show($: EngineInterface, state: SessionState, text: string | undefined)
   }
 }
 
-function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined): string {
+function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined, connectError: string | undefined): string {
   if (probe === 'slow') {
     return tools
       ? 'Unreal MCP ◐ connected · editor busy'
@@ -106,8 +124,9 @@ function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined):
   if (up && tools) return 'Unreal MCP ● connected'
   if (up) {
     // The session's MCP client dials servers once at start; a server that wasn't
-    // listening then stays failed until the session reconnects it. upAtStart tells
-    // the two cases apart; both read the same until reconnect options exist.
+    // listening then stays failed until it is connected again. The mod tries that
+    // itself (see refresh); this is what shows while it hasn't worked.
+    if (connectError) return 'Unreal MCP ◐ editor up · connect failed (/unreal-connect)'
     return upAtStart === false
       ? 'Unreal MCP ◐ editor up · not connected'
       : 'Unreal MCP ◐ editor up · not connected'
@@ -130,12 +149,27 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
 
   const projectUrl = project.kind === 'found' && typeof project.entry.url === 'string' ? project.entry.url : ''
   const url = settings.endpointOverride || projectUrl || FALLBACK_ENDPOINT
-  const [probe, tools] = await Promise.all([probeEndpoint($, url), hasSessionTools($, settings.server)])
+  const [probe, firstTools] = await Promise.all([probeEndpoint($, url), hasSessionTools($, settings.server)])
+  let tools = firstTools
   // A slow answer says the editor process exists, so it counts as up for the start check.
   if (state.upAtStart === undefined) state.upAtStart = probe !== 'down'
+
+  // Editor up but no tools: connect the plugin's own server, at most every 30 s.
+  if (probe === 'up' && !tools) {
+    const now = await $.clock.now()
+    if (now - state.lastConnectAt >= AUTO_CONNECT_EVERY_MS) {
+      state.lastConnectAt = now
+      if (!(await connectServer($, state))) tools = await hasSessionTools($, settings.server)
+    }
+  }
+  if (tools) state.connectError = undefined
+
   state.connected = probe === 'up' && tools
-  show($, state, describe(probe, tools, state.upAtStart))
+  show($, state, describe(probe, tools, state.upAtStart, state.connectError))
 }
+
+// The latest session's state and cwd, for /unreal-connect (registered once per module).
+let active: { state: SessionState; cwd: string } | undefined
 
 // Skip a tick while the previous check is still pending, so a hung editor
 // doesn't pile up requests that can't be cancelled.
@@ -154,7 +188,15 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    const state: SessionState = { last: undefined, upAtStart: undefined, connected: false, tick: 0, inFlight: false }
+    const state: SessionState = {
+      last: undefined, upAtStart: undefined, connected: false, tick: 0, inFlight: false,
+      lastConnectAt: Number.NEGATIVE_INFINITY, connectError: undefined,
+    }
+    active = { state, cwd: e.cwd }
+    await $.command.register({
+      name: 'unreal-connect',
+      description: 'Connect this session to the Unreal Editor MCP server',
+    })
     void guardedRefresh($, e.cwd, settings, state)
     $.clock.every(POLL_MS, () => {
       state.tick++
@@ -163,5 +205,22 @@ export const register: Register = (on, options) => {
       void guardedRefresh($, e.cwd, settings, state)
     })
     return result
+  })
+
+  on('command.run', { command: 'unreal-connect' }, async $ => {
+    if (!active) return { text: 'Unreal MCP status has not started in this session yet.' }
+    const { state, cwd } = active
+    if (await hasSessionTools($, settings.server)) {
+      void guardedRefresh($, cwd, settings, state)
+      return { text: 'Already connected to the Unreal Editor MCP server.' }
+    }
+    const error = await connectServer($, state)
+    state.lastConnectAt = await $.clock.now()
+    void guardedRefresh($, cwd, settings, state)
+    return {
+      text: error
+        ? `Couldn't connect to the Unreal Editor MCP server: ${error} Is the editor running with its MCP plugin enabled?`
+        : 'Connected to the Unreal Editor MCP server.',
+    }
   })
 }

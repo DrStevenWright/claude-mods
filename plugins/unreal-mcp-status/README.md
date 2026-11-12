@@ -6,6 +6,7 @@ A Claude Code status line that shows whether the Unreal Editor's MCP server is r
 | --- | --- |
 | `Unreal MCP ● connected` | The editor answers and this session has the server's tools. |
 | `Unreal MCP ◐ editor up · not connected` | The editor answers, but this session has no connection: usually the editor started after the session, whose one connection attempt failed. Reconnect the server, fork the session or start a new one. |
+| `Unreal MCP ◐ editor up · connect failed (/unreal-connect)` | The mod tried to connect the plugin's server and was refused. Run `/unreal-connect` to retry and see the reason. |
 | `Unreal MCP ◐ connected · editor busy` | The session is connected, but the editor didn't answer within 3 seconds, usually because it is cooking, compiling shaders or blocked on a dialog. |
 | `Unreal MCP ○ editor busy` | The same, in a session that isn't connected. |
 | `Unreal MCP ○ editor not responding` | The session has the tools, but nothing answers at the endpoint any more. |
@@ -16,7 +17,7 @@ It checks every 15 seconds, and every 30 seconds once connected. The status upda
 
 **Reconnecting:** Claude Code connects to MCP servers once, when the session starts. Where Reconnect is available for the server (`/mcp` in the terminal CLI), use it. In the desktop app a project `.mcp.json` server may not be listed with a Reconnect button; forking or starting a new session connects it.
 
-**The plugin's own server:** the plugin also ships the Unreal server in its own `.mcp.json` (`http://127.0.0.1:8000/mcp`). As a plugin server it can be re-dialed in a running session: ask Claude to reconnect it, which the desktop app allows for plugin servers but not for project ones. Its tools are named `mcp__plugin_unreal-mcp-status_unreal-mcp__*`. In a folder with a `.uproject` the status shows even when the project's `.mcp.json` has no `unreal-mcp` entry. If you keep the project entry as well, the session connects to the editor twice and lists both sets of tools, so remove one.
+**The plugin's own server:** the plugin also ships the Unreal server in its own `.mcp.json` (`http://127.0.0.1:8000/mcp`). As a plugin server it can be connected in a running session. When the editor is up but the session has no Unreal tools, the mod connects it automatically (at most every 30 seconds), and `/unreal-connect` does the same on demand and says why if it fails. Its tools are named `mcp__plugin_unreal-mcp-status_unreal-mcp__*`. In a folder with a `.uproject` the status shows even when the project's `.mcp.json` has no `unreal-mcp` entry. If you keep the project entry as well, the session connects to the editor twice and lists both sets of tools, so remove one.
 
 ## Install
 
