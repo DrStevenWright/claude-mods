@@ -6,6 +6,8 @@ A Claude Code status line that shows whether the Unreal Editor's MCP server is r
 | --- | --- |
 | `Unreal MCP ● connected` | The editor answers and this session has the server's tools. |
 | `Unreal MCP ◐ editor up · not connected` | The editor answers, but this session has no connection: usually the editor started after the session, whose one connection attempt failed. Reconnect the server, fork the session or start a new one. |
+| `Unreal MCP ◐ editor up · not connected ⓘ` | Not connected, and the project's `.mcp.json` lists `unreal-mcp` at the plugin's URL, which hides the plugin's server so the mod can't connect it. A toast explains once per session; `/unreal-connect` shows the same. Remove the project entry. |
+| `Unreal MCP ⚠ connected twice ⓘ` | The session has tools from both the project's and the plugin's server, so every tool is listed twice. Remove the project entry. |
 | `Unreal MCP ◐ editor up · connect failed (/unreal-connect)` | The mod tried to connect the plugin's server and was refused. Run `/unreal-connect` to retry and see the reason. |
 | `Unreal MCP ◐ connected · editor busy` | The session is connected, but the editor didn't answer within 3 seconds, usually because it is cooking, compiling shaders or blocked on a dialog. |
 | `Unreal MCP ○ editor busy` | The same, in a session that isn't connected. |

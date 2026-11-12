@@ -61,14 +61,49 @@ async function probeEndpoint($: EngineInterface, url: string): Promise<Probe> {
 // re-dial it as a plugin server. Plugin servers' tools carry a plugin prefix.
 const PLUGIN_NAME = 'unreal-mcp-status'
 
-async function hasSessionTools($: EngineInterface, server: string): Promise<boolean> {
+// Which copies of the server this session has tools from: the project's
+// (.mcp.json) and/or the plugin's own.
+type ToolSources = { project: boolean; plugin: boolean }
+
+async function sessionToolSources($: EngineInterface, server: string): Promise<ToolSources> {
   try {
-    const prefixes = [`mcp__${server}__`, `mcp__plugin_${PLUGIN_NAME}_${server}__`]
-    return (await $.tool.list()).some(t => prefixes.some(p => t.name.startsWith(p)))
+    const names = (await $.tool.list()).map(t => t.name)
+    return {
+      project: names.some(n => n.startsWith(`mcp__${server}__`)),
+      plugin: names.some(n => n.startsWith(`mcp__plugin_${PLUGIN_NAME}_${server}__`)),
+    }
   } catch {
-    return false
+    return { project: false, plugin: false }
   }
 }
+
+async function hasSessionTools($: EngineInterface, server: string): Promise<boolean> {
+  const sources = await sessionToolSources($, server)
+  return sources.project || sources.plugin
+}
+
+// The URL in this plugin's own .mcp.json.
+const PLUGIN_SERVER_URL = 'http://127.0.0.1:8000/mcp'
+
+function normaliseUrl(url: string): string {
+  return url.trim().toLowerCase().replace('://localhost', '://127.0.0.1').replace(/\/+$/, '')
+}
+
+// Claude Code drops a plugin server whose URL a project server already uses,
+// so a project entry at the plugin's URL hides the plugin's copy, and the mod
+// can't connect it.
+function shadowsPluginServer(projectUrl: string): boolean {
+  return projectUrl !== '' && normaliseUrl(projectUrl) === normaliseUrl(PLUGIN_SERVER_URL)
+}
+
+const SHADOW_DETAIL =
+  "The project's .mcp.json lists unreal-mcp at the same URL as this plugin's server, so Claude Code uses the project entry " +
+  "and drops the plugin's copy. A project server can't be reconnected in a running session, so the mod can't connect it. " +
+  'Remove unreal-mcp from .mcp.json; sessions started after that use the plugin server, which reconnects by itself.'
+
+const TWICE_DETAIL =
+  'This session has Unreal tools from both the project\'s .mcp.json and this plugin, so every editor tool is listed twice. ' +
+  'Remove unreal-mcp from .mcp.json.'
 
 // An Unreal project folder: the plugin's own server is used there even when
 // the project's .mcp.json doesn't list one.
@@ -89,6 +124,15 @@ type SessionState = {
   inFlight: boolean
   lastConnectAt: number            // clock time of the last automatic connect attempt
   connectError: string | undefined // why the last connect attempt failed, if it did
+  shadowed: boolean                // the project's entry hides the plugin's server
+  toasted: Set<string>             // details already shown as a toast this session
+}
+
+// Shows a detail once per session, as a toast the status line can point at.
+function toastOnce($: EngineInterface, state: SessionState, key: string, text: string): void {
+  if (state.toasted.has(key)) return
+  state.toasted.add(key)
+  $.ui.toast(`Unreal MCP: ${text}`, { timeoutMs: 12_000 })
 }
 
 // The server's key in this plugin's own .mcp.json, which $.mcp.connect takes.
@@ -114,7 +158,9 @@ function show($: EngineInterface, state: SessionState, text: string | undefined)
   }
 }
 
-function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined, connectError: string | undefined): string {
+function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined, connectError: string | undefined,
+  shadowed: boolean, twice: boolean): string {
+  if (twice) return 'Unreal MCP ⚠ connected twice ⓘ'
   if (probe === 'slow') {
     return tools
       ? 'Unreal MCP ◐ connected · editor busy'
@@ -126,6 +172,7 @@ function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined, 
     // The session's MCP client dials servers once at start; a server that wasn't
     // listening then stays failed until it is connected again. The mod tries that
     // itself (see refresh); this is what shows while it hasn't worked.
+    if (shadowed) return 'Unreal MCP ◐ editor up · not connected ⓘ'
     if (connectError) return 'Unreal MCP ◐ editor up · connect failed (/unreal-connect)'
     return upAtStart === false
       ? 'Unreal MCP ◐ editor up · not connected'
@@ -149,13 +196,19 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
 
   const projectUrl = project.kind === 'found' && typeof project.entry.url === 'string' ? project.entry.url : ''
   const url = settings.endpointOverride || projectUrl || FALLBACK_ENDPOINT
-  const [probe, firstTools] = await Promise.all([probeEndpoint($, url), hasSessionTools($, settings.server)])
-  let tools = firstTools
+  const [probe, sources] = await Promise.all([probeEndpoint($, url), sessionToolSources($, settings.server)])
+  let tools = sources.project || sources.plugin
+  const twice = sources.project && sources.plugin
+  state.shadowed = shadowsPluginServer(projectUrl)
   // A slow answer says the editor process exists, so it counts as up for the start check.
   if (state.upAtStart === undefined) state.upAtStart = probe !== 'down'
 
+  if (twice) toastOnce($, state, 'twice', TWICE_DETAIL)
+  if (probe === 'up' && !tools && state.shadowed) toastOnce($, state, 'shadowed', SHADOW_DETAIL)
+
   // Editor up but no tools: connect the plugin's own server, at most every 30 s.
-  if (probe === 'up' && !tools) {
+  // Not while the project entry hides it: there is nothing to connect.
+  if (probe === 'up' && !tools && !state.shadowed) {
     const now = await $.clock.now()
     if (now - state.lastConnectAt >= AUTO_CONNECT_EVERY_MS) {
       state.lastConnectAt = now
@@ -165,7 +218,7 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
   if (tools) state.connectError = undefined
 
   state.connected = probe === 'up' && tools
-  show($, state, describe(probe, tools, state.upAtStart, state.connectError))
+  show($, state, describe(probe, tools, state.upAtStart, state.connectError, state.shadowed, twice))
 }
 
 // The latest session's state and cwd, for /unreal-connect (registered once per module).
@@ -191,6 +244,7 @@ export const register: Register = (on, options) => {
     const state: SessionState = {
       last: undefined, upAtStart: undefined, connected: false, tick: 0, inFlight: false,
       lastConnectAt: Number.NEGATIVE_INFINITY, connectError: undefined,
+      shadowed: false, toasted: new Set<string>(),
     }
     active = { state, cwd: e.cwd }
     await $.command.register({
@@ -210,10 +264,13 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'unreal-connect' }, async $ => {
     if (!active) return { text: 'Unreal MCP status has not started in this session yet.' }
     const { state, cwd } = active
-    if (await hasSessionTools($, settings.server)) {
+    const sources = await sessionToolSources($, settings.server)
+    if (sources.project && sources.plugin) return { text: TWICE_DETAIL }
+    if (sources.project || sources.plugin) {
       void guardedRefresh($, cwd, settings, state)
       return { text: 'Already connected to the Unreal Editor MCP server.' }
     }
+    if (state.shadowed) return { text: `Not connected. ${SHADOW_DETAIL}` }
     const error = await connectServer($, state)
     state.lastConnectAt = await $.clock.now()
     void guardedRefresh($, cwd, settings, state)
