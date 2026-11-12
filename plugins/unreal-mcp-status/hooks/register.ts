@@ -146,7 +146,14 @@ const twiceDetail = (names: string[]) =>
   'This session is connected twice, meaning that every editor tool is listed twice. To prevent this, remove ' +
   `${names.join(' and ')} from .mcp.json or else disable the ${PLUGIN_NAME} plugin.`
 
-const GONE_DETAIL = 'The editor stopped answering. Restart editor to reconnect.'
+// Toasts are kept short: the cause and the fix. /unreal-connect gives the longer detail.
+const shadowToast = (name: string) =>
+  `.mcp.json lists ${name}, which blocks reconnection. Remove it and start a new session.`
+
+const twiceToast = (names: string[]) =>
+  `connected twice, so every tool is listed twice. Remove ${names.join(' and ')} from .mcp.json or disable this plugin.`
+
+const GONE_TOAST = 'the editor stopped answering. Restart it to reconnect.'
 
 // Ends a sentence taken from elsewhere with exactly one full stop.
 function sentence(text: string): string {
@@ -155,17 +162,18 @@ function sentence(text: string): string {
 }
 
 const connectFailedToast = (reason: string) =>
-  `Couldn't connect to the editor's MCP server: ${sentence(reason)} The mod retries every 30 seconds. Run /unreal-connect to retry now.`
+  `couldn't connect: ${sentence(reason)} Retrying every 30 s, or run /unreal-connect.`
 
 const connectFailedReply = (reason: string) =>
   `Couldn't connect to the Unreal Editor MCP server: ${sentence(reason)} Check that the editor is running with its Model Context Protocol plugin enabled.`
 
-// detail is "line L, column C: message" when the parser gave a position, else the bare message.
+// detail is "line L, column C: message" when the parser gave a position, else
+// the bare message; the toast keeps only the position.
 function invalidJsonToast(detail: string): string {
-  const what = detail.startsWith('line ')
-    ? `isn't valid JSON (${detail}).`
-    : `isn't valid JSON: ${sentence(detail)}`
-  return `The project's .mcp.json ${what} Fix the file. The status will refresh within 15 seconds.`
+  const position = /^line \d+, column \d+/.exec(detail)
+  return position
+    ? `.mcp.json isn't valid JSON (${position[0]}). Fix the file.`
+    : ".mcp.json isn't valid JSON. Fix the file."
 }
 
 // An Unreal project folder: the plugin's own server is used there even when
@@ -289,11 +297,11 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
   // A slow answer says the editor process exists, so it counts as up for the start check.
   if (state.upAtStart === undefined) state.upAtStart = probe !== 'down'
 
-  toastOnEntry($, state, 'twice', twice, twiceDetail(state.projectNames))
-  toastOnEntry($, state, 'shadowed', probe === 'up' && !tools && state.shadowed, shadowDetail(settings.server))
+  toastOnEntry($, state, 'twice', twice, twiceToast(state.projectNames))
+  toastOnEntry($, state, 'shadowed', probe === 'up' && !tools && state.shadowed, shadowToast(settings.server))
   // Editor not responding: toast only when it follows a working connection.
   const gone = probe === 'down' && tools && (state.connected || state.toasted.has('gone'))
-  toastOnEntry($, state, 'gone', gone, GONE_DETAIL)
+  toastOnEntry($, state, 'gone', gone, GONE_TOAST)
 
   // Editor up but no tools: connect the plugin's own server, at most every 30 s.
   // Not while the project entry hides it: there is nothing to connect.
