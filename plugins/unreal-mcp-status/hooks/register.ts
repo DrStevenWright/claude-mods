@@ -57,10 +57,24 @@ async function probeEndpoint($: EngineInterface, url: string): Promise<Probe> {
   return Promise.race([request, timeout])
 }
 
+// This plugin also ships the server in its own .mcp.json, so a session can
+// re-dial it as a plugin server. Plugin servers' tools carry a plugin prefix.
+const PLUGIN_NAME = 'unreal-mcp-status'
+
 async function hasSessionTools($: EngineInterface, server: string): Promise<boolean> {
   try {
-    const prefix = `mcp__${server}__`
-    return (await $.tool.list()).some(t => t.name.startsWith(prefix))
+    const prefixes = [`mcp__${server}__`, `mcp__plugin_${PLUGIN_NAME}_${server}__`]
+    return (await $.tool.list()).some(t => prefixes.some(p => t.name.startsWith(p)))
+  } catch {
+    return false
+  }
+}
+
+// An Unreal project folder: the plugin's own server is used there even when
+// the project's .mcp.json doesn't list one.
+async function isUnrealProject($: EngineInterface, cwd: string): Promise<boolean> {
+  try {
+    return (await $.fs.list(cwd)).some(f => f.name.toLowerCase().endsWith('.uproject'))
   } catch {
     return false
   }
@@ -104,19 +118,18 @@ function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined):
 
 async function refresh($: EngineInterface, cwd: string, settings: Settings, state: SessionState): Promise<void> {
   const project = await projectServerEntry($, cwd, settings.server)
-  if (project.kind === 'absent') {
-    state.connected = false
-    return show($, state, undefined)
-  }
   if (project.kind === 'unreadable') {
     state.connected = false
     return show($, state, 'Unreal MCP ○ invalid .mcp.json')
   }
+  // Stay silent outside Unreal projects: no project entry and no .uproject.
+  if (project.kind === 'absent' && !(await isUnrealProject($, cwd))) {
+    state.connected = false
+    return show($, state, undefined)
+  }
 
-  const entry = project.entry
-  const url = settings.endpointOverride
-    || (typeof entry.url === 'string' && entry.url)
-    || FALLBACK_ENDPOINT
+  const projectUrl = project.kind === 'found' && typeof project.entry.url === 'string' ? project.entry.url : ''
+  const url = settings.endpointOverride || projectUrl || FALLBACK_ENDPOINT
   const [probe, tools] = await Promise.all([probeEndpoint($, url), hasSessionTools($, settings.server)])
   // A slow answer says the editor process exists, so it counts as up for the start check.
   if (state.upAtStart === undefined) state.upAtStart = probe !== 'down'
