@@ -110,7 +110,7 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
   }
   if (project.kind === 'unreadable') {
     state.connected = false
-    return show($, state, 'Unreal MCP ○ invalid mcp.json')
+    return show($, state, 'Unreal MCP ○ invalid .mcp.json')
   }
 
   const entry = project.entry

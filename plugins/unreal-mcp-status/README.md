@@ -10,7 +10,7 @@ A Claude Code status line that shows whether the Unreal Editor's MCP server is r
 | `Unreal MCP ○ editor busy` | The same, in a session that isn't connected. |
 | `Unreal MCP ○ editor not responding` | The session has the tools, but nothing answers at the endpoint any more. |
 | `Unreal MCP ○ offline` | Nothing answers at the endpoint, and the session isn't connected. |
-| `Unreal MCP ○ invalid mcp.json` | The project's `.mcp.json` exists but can't be parsed. |
+| `Unreal MCP ○ invalid .mcp.json` | The project's `.mcp.json` exists but can't be parsed. |
 
 It checks every 15 seconds, and every 30 seconds once connected. The status updates on its own after a reconnect. It stays silent in any project whose `.mcp.json` does not configure the server, so it is safe to install at user scope.
 
