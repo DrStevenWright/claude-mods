@@ -140,9 +140,6 @@ const shadowToast = (name: string) =>
 const twiceToast = (names: string[]) =>
   `connected twice, so every tool is listed twice. Remove ${names.join(' and ')} from .mcp.json or disable this plugin.`
 
-// A session reconnects by itself when an editor it was connected to comes back.
-const GONE_TOAST = 'the editor stopped answering. Restart it to reconnect.'
-
 // A session dials its MCP servers once, at start. A plugin server that failed
 // then stays failed: $.mcp.connect returns the startup failure without
 // re-dialling (tested). The desktop app's Reconnect button does re-dial it, and
@@ -216,7 +213,9 @@ function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined, 
     void shadowed
     return 'Unreal MCP ◐ editor up · not connected ⓘ'
   }
-  if (tools) return 'Unreal MCP ○ editor not responding ⓘ'
+  // Refused: nothing is listening, almost always because the editor was closed.
+  // That's normal, so it reads as offline whether or not the session was
+  // connected; the session reconnects by itself when the editor comes back.
   return 'Unreal MCP ○ offline'
 }
 
@@ -260,9 +259,6 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
 
   toastOnEntry($, state, 'twice', twice, twiceToast(state.projectNames))
   toastOnEntry($, state, 'shadowed', probe === 'up' && !tools && state.shadowed, shadowToast(settings.server))
-  // Editor not responding: toast only when it follows a working connection.
-  const gone = probe === 'down' && tools && (state.connected || state.toasted.has('gone'))
-  toastOnEntry($, state, 'gone', gone, GONE_TOAST)
 
   // Editor up but this session has no tools: only the Reconnect button can re-dial.
   toastOnEntry($, state, 'reconnect', probe === 'up' && !tools && !state.shadowed, RECONNECT_TOAST)

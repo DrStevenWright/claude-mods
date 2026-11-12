@@ -10,8 +10,7 @@ A Claude Code status line that shows whether the Unreal Editor's MCP server is r
 | `Unreal MCP ⚠ connected twice ⓘ` | The session has tools from both the project's and the plugin's server, so every tool is listed twice. Remove the project entry or disable this plugin. |
 | `Unreal MCP ◐ connected · editor busy` | The session is connected, but the editor didn't answer within 3 seconds, usually because it is cooking, compiling shaders or blocked on a dialog. |
 | `Unreal MCP ○ editor busy` | The same, in a session that isn't connected. |
-| `Unreal MCP ○ editor not responding ⓘ` | The session was connected, but nothing answers at the endpoint any more, usually because the editor closed or crashed. Restart it to reconnect. |
-| `Unreal MCP ○ offline` | Nothing answers at the endpoint, and the session isn't connected. |
+| `Unreal MCP ○ offline` | Nothing answers at the endpoint: the editor isn't running, or was closed. A session that was connected reconnects by itself when the editor comes back. |
 | `Unreal MCP ○ invalid .mcp.json ⓘ` | The project's `.mcp.json` exists but can't be parsed. The toast gives the line and column. |
 
 `ⓘ` means a toast explains the state, once each time the state is entered.
