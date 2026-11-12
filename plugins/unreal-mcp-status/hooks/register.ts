@@ -41,15 +41,20 @@ async function projectServerEntry($: EngineInterface, cwd: string, server: strin
     : { kind: 'absent' }
 }
 
+const PROBE_TIMEOUT_MS = 3_000
+
+type Probe = 'up' | 'down' | 'slow'
+
 // Any HTTP answer means the editor's MCP plugin is listening; a rejected
-// fetch (connection refused) means it is not.
-async function isEndpointUp($: EngineInterface, url: string): Promise<boolean> {
-  try {
-    await $.http.fetch(url, { method: 'GET', headers: { Accept: 'application/json, text/event-stream' } })
-    return true
-  } catch {
-    return false
-  }
+// fetch (connection refused) means it is not. $.http.fetch has no timeout or
+// abort signal, so the probe races it against a sleep: an editor that is busy
+// (cooking, compiling shaders) or hung answers 'slow' instead of hanging the check.
+async function probeEndpoint($: EngineInterface, url: string): Promise<Probe> {
+  const request = $.http
+    .fetch(url, { method: 'GET', headers: { Accept: 'application/json' } })
+    .then((): Probe => 'up', (): Probe => 'down')
+  const timeout = $.clock.sleep(PROBE_TIMEOUT_MS).then((): Probe => 'slow')
+  return Promise.race([request, timeout])
 }
 
 async function hasSessionTools($: EngineInterface, server: string): Promise<boolean> {
@@ -67,6 +72,7 @@ type SessionState = {
   upAtStart: boolean | undefined   // endpoint state on the first check of this session
   connected: boolean
   tick: number
+  inFlight: boolean
 }
 
 function show($: EngineInterface, state: SessionState, text: string | undefined): void {
@@ -76,7 +82,13 @@ function show($: EngineInterface, state: SessionState, text: string | undefined)
   }
 }
 
-function describe(up: boolean, tools: boolean, upAtStart: boolean | undefined): string {
+function describe(probe: Probe, tools: boolean, upAtStart: boolean | undefined): string {
+  if (probe === 'slow') {
+    return tools
+      ? 'Unreal MCP ◐ connected · editor busy (no answer in 3 s)'
+      : 'Unreal MCP ○ editor busy or hung (no answer in 3 s)'
+  }
+  const up = probe === 'up'
   if (up && tools) return 'Unreal MCP ● connected'
   if (up) {
     // The session's MCP client dials servers once at start; a server that wasn't
@@ -104,10 +116,23 @@ async function refresh($: EngineInterface, cwd: string, settings: Settings, stat
   const url = settings.endpointOverride
     || (typeof entry.url === 'string' && entry.url)
     || FALLBACK_ENDPOINT
-  const [up, tools] = await Promise.all([isEndpointUp($, url), hasSessionTools($, settings.server)])
-  if (state.upAtStart === undefined) state.upAtStart = up
-  state.connected = up && tools
-  show($, state, describe(up, tools, state.upAtStart))
+  const [probe, tools] = await Promise.all([probeEndpoint($, url), hasSessionTools($, settings.server)])
+  // A slow answer says the editor process exists, so it counts as up for the start check.
+  if (state.upAtStart === undefined) state.upAtStart = probe !== 'down'
+  state.connected = probe === 'up' && tools
+  show($, state, describe(probe, tools, state.upAtStart))
+}
+
+// Skip a tick while the previous check is still pending, so a hung editor
+// doesn't pile up requests that can't be cancelled.
+async function guardedRefresh($: EngineInterface, cwd: string, settings: Settings, state: SessionState): Promise<void> {
+  if (state.inFlight) return
+  state.inFlight = true
+  try {
+    await refresh($, cwd, settings, state)
+  } finally {
+    state.inFlight = false
+  }
 }
 
 export const register: Register = (on, options) => {
@@ -115,13 +140,13 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    const state: SessionState = { last: undefined, upAtStart: undefined, connected: false, tick: 0 }
-    void refresh($, e.cwd, settings, state)
+    const state: SessionState = { last: undefined, upAtStart: undefined, connected: false, tick: 0, inFlight: false }
+    void guardedRefresh($, e.cwd, settings, state)
     $.clock.every(POLL_MS, () => {
       state.tick++
       // Poll every 15 s until connected, then every 30 s.
       if (state.connected && state.tick % CONNECTED_EVERY_N_TICKS !== 0) return
-      void refresh($, e.cwd, settings, state)
+      void guardedRefresh($, e.cwd, settings, state)
     })
     return result
   })
