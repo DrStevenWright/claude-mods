@@ -16,6 +16,8 @@ It checks every 15 seconds, and every 30 seconds once connected. The status upda
 
 **Reconnecting:** Claude Code connects to MCP servers once, when the session starts. Where Reconnect is available for the server (`/mcp` in the terminal CLI), use it. In the desktop app a project `.mcp.json` server may not be listed with a Reconnect button; forking or starting a new session connects it.
 
+**The plugin's own server:** the plugin also ships the Unreal server in its own `.mcp.json` (`http://127.0.0.1:8000/mcp`). As a plugin server it can be re-dialed in a running session: ask Claude to reconnect it, which the desktop app allows for plugin servers but not for project ones. Its tools are named `mcp__plugin_unreal-mcp-status_unreal-mcp__*`. In a folder with a `.uproject` the status shows even when the project's `.mcp.json` has no `unreal-mcp` entry. If you keep the project entry as well, the session connects to the editor twice and lists both sets of tools, so remove one.
+
 ## Install
 
 ```
